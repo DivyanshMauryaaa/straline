@@ -4,108 +4,87 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import supabase from "@/lib/supabase";
 import { useUser } from "@clerk/nextjs";
-import { Save, Sparkles, Check, Loader2, Trash2, Play, Code, ExternalLink } from "lucide-react";
+import { Save, Sparkles, Check, Loader2, Trash2, Play, Code, ExternalLink, FileText } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import Editor from '@monaco-editor/react';
-
-interface Plan {
-  name: string;
-  uiPlan: string;
-  flowPlan: string;
-  prerequisites: string;
-}
-
-interface ProjectFiles {
-  [key: string]: string;
-}
-
-interface SavedProject {
-  id: number;
-  user_id: string;
-  name: string;
-  description: string;
-  uiPlan: string;
-  flowPlan: string;
-  prerequisites: string;
-  generated_code?: any;
-  created_at: string;
-}
-
-type GenerationPhase = 'idle' | 'generating' | 'complete';
 
 export default function Home() {
+  const [showProjects, setShowProjects] = useState(false);
+  const [magicSheet, setMagicSheet] = useState(false);
   const [prompt, setPrompt] = useState('');
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [currentPhase, setCurrentPhase] = useState<GenerationPhase>('idle');
-  const [error, setError] = useState('');
-  const [name, setProjectName] = useState('My Awesome App');
-  const [generatedPlan, setGeneratedPlan] = useState<Plan | null>(null);
-  const [selectedAppId, setSelectedAppId] = useState<number | null>(null);
-  const [selectedTab, setSelectedTab] = useState('uiPlan');
-  const [selectedEditTab, setSelectedEditTab] = useState('overview');
-  const [generatedCode, setGeneratedCode] = useState<ProjectFiles>({});
-  const [isGeneratingCode, setIsGeneratingCode] = useState(false);
-  const [isRunning, setIsRunning] = useState(false);
-  const [iframeUrl, setIframeUrl] = useState<string>('');
-  const [openSheets, setOpenSheets] = useState<{ [key: number]: boolean }>({});
-
+  const [newAppName, setNewAppName] = useState('');
   const { user } = useUser();
-  const [projects, setProjects] = useState<SavedProject[]>([]);
+
+  const [phase, setPhase] = useState('planning'); // planning, coding, completed
+  const [isLoading, setIsLoading] = useState(false);
+  const [formError, setFormError] = useState('');
+  const [showPlans, setShowPlans] = useState(true);
+
+  const [generatedUIPlan, setGeneratedUIPlan] = useState('');
+  const [generatedFlowPlan, setGeneratedFlowPlan] = useState('');
+  const [generatedLogicPlan, setGeneratedLogicPlan] = useState('');
+  const [generatedCode, setGeneratedCode] = useState({
+    html: '',
+    css: '',
+    js: ''
+  });
+
+  const [projects, setProjects] = useState<any[]>([]);
 
   const fetchProjects = async () => {
     if (!user) return;
-    const { data, error } = await supabase
-      .from('projects')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false });
+    const { data, error } = await supabase.from('projects').select('*').eq('user_id', user.id).order('created_at', { ascending: false });
     if (error) {
       console.error('Error fetching projects:', error);
-    } else {
-      setProjects(data || []);
+      return;
     }
-  };
+    setProjects(data);
+  }
 
   useEffect(() => {
-    if (user) {
-      fetchProjects();
-    }
+    const loadProjects = async () => {
+      if (!user) return;
+      const { data, error } = await supabase
+        .from('projects')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching projects:', error);
+        toast.error('Failed to load projects');
+        return;
+      }
+      setProjects(data || []);
+    };
+
+    loadProjects();
   }, [user]);
 
-  // Safe JSON parser with error handling
-  const safeJsonParse = (text: string) => {
-    try {
-      // Clean the text first - remove any markdown code blocks
-      let cleanedText = text.replace(/```json\s*|\s*```/g, '').trim();
-      
-      // Try to find JSON object in the text
-      const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
-      }
-      
-      // If no JSON found, try parsing the whole text
-      return JSON.parse(cleanedText);
-    } catch (error) {
-      console.error('JSON parsing error:', error);
-      console.log('Raw text that failed to parse:', text);
-      throw new Error('Invalid JSON response from AI');
+  const handleGenerate = () => {
+    if (!newAppName) {
+      setFormError('Project name is required');
+      return;
     }
-  };
-
-  const generateWithGemini = async (userPrompt: string, projectName: string, mode: string = "plan") => {
-    const GEMINI_API_KEY = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
-    if (!GEMINI_API_KEY) {
-      throw new Error('Gemini API key not configured');
+    if (!prompt) {
+      setFormError('Project description is required');
+      return;
     }
+    setFormError('');
+    setIsLoading(true);
+    setPhase('planning');
+    setShowPlans(true);
 
-    let systemPrompt = "";
-    if (mode === "plan") {
-      systemPrompt = `You are an expert web application planner. Based on the user's idea, generate a comprehensive plan with exactly these three sections:
+    //Plan the new app
+    plan(newAppName, prompt);
+  }
+
+  const plan = async (projectName: string, userPrompt: string) => {
+    let systemPrompt = `You are an expert web application planner. Based on the user's idea, generate a comprehensive plan with exactly these three sections:
 
 1. UI_PLAN: Detailed user interface design plan including layout, components, and user experience
 2. FLOW_PLAN: User flow and navigation structure
@@ -117,45 +96,9 @@ FLOW_PLAN:[your flow plan here]
 PREREQUISITES:[your prerequisites here]
 
 Be specific and practical. For project: "${projectName}" and idea: "${userPrompt}"`;
-    }
-
-    if (mode === "code") {
-      systemPrompt = `You are an expert web application developer. Based on the following plan, generate a complete React application with TypeScript and Tailwind CSS.
-
-PROJECT: ${projectName}
-DESCRIPTION: ${userPrompt}
-
-UI PLAN: ${generatedPlan?.uiPlan}
-FLOW PLAN: ${generatedPlan?.flowPlan}
-PREREQUISITES: ${generatedPlan?.prerequisites}
-
-Generate the following files with actual working code. Return ONLY valid JSON, no other text:
-
-{
-  "files": {
-    "package.json": "content here as string",
-    "index.html": "content here as string", 
-    "src/main.tsx": "content here as string",
-    "src/App.tsx": "content here as string",
-    "src/index.css": "@tailwind base;\\n@tailwind components;\\n@tailwind utilities;",
-    "tailwind.config.js": "content here as string",
-    "vite.config.ts": "content here as string",
-    "tsconfig.json": "content here as string",
-    "tsconfig.node.json": "content here as string"
-  }
-}
-
-Make sure the code is:
-- Modern React with TypeScript
-- Uses Tailwind CSS for styling
-- Includes all necessary dependencies
-- Actually runnable with Vite
-- Follows best practices
-- All strings are properly escaped`;
-    }
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_GEMINI_API_URL}?key=${GEMINI_API_KEY}`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_GEMINI_API_URL}?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -178,8 +121,7 @@ Make sure the code is:
       }
 
       const data = await response.json();
-      
-      // Check if response structure is valid
+
       if (!data.candidates || !data.candidates[0] || !data.candidates[0].content || !data.candidates[0].content.parts || !data.candidates[0].content.parts[0]) {
         console.error('Invalid API response structure:', data);
         throw new Error('Invalid response structure from AI');
@@ -187,808 +129,352 @@ Make sure the code is:
 
       const responseText = data.candidates[0].content.parts[0].text;
 
-      if (mode === "plan") {
-        const uiPlanMatch = responseText.match(/UI_PLAN:(.*?)(?=FLOW_PLAN:|$)/s);
-        const flowPlanMatch = responseText.match(/FLOW_PLAN:(.*?)(?=PREREQUISITES:|$)/s);
-        const prerequisitesMatch = responseText.match(/PREREQUISITES:(.*?)$/s);
+      const uiPlanMatch = responseText.match(/UI_PLAN:(.*?)(?=FLOW_PLAN:|$)/s);
+      const flowPlanMatch = responseText.match(/FLOW_PLAN:(.*?)(?=PREREQUISITES:|$)/s);
+      const prerequisitesMatch = responseText.match(/PREREQUISITES:(.*?)$/s);
 
-        return {
-          uiPlan: uiPlanMatch ? uiPlanMatch[1].trim() : 'No UI plan generated.',
-          flowPlan: flowPlanMatch ? flowPlanMatch[1].trim() : 'No flow plan generated.',
-          prerequisites: prerequisitesMatch ? prerequisitesMatch[1].trim() : 'No prerequisites generated.'
-        };
-      } else {
-        // For code generation, parse JSON safely
-        return safeJsonParse(responseText);
-      }
+      setGeneratedUIPlan(uiPlanMatch ? uiPlanMatch[1].trim() : 'No UI Plan found');
+      setGeneratedFlowPlan(flowPlanMatch ? flowPlanMatch[1].trim() : 'No Flow Plan found');
+      setGeneratedLogicPlan(prerequisitesMatch ? prerequisitesMatch[1].trim() : 'No Prerequisites found');
+
+      setIsLoading(false);
+      toast.success('Plan generated successfully!');
+      return;
+
     } catch (error) {
-      console.error('Error in generateWithGemini:', error);
+      console.error('Error generating plan:', error);
+      toast.error(`${error}`);
+      setIsLoading(false);
       throw error;
     }
-  };
+  }
 
-  const handleGenerate = async () => {
-    if (!prompt) {
-      toast.error('Please enter a prompt.');
-      return;
-    }
-
-    setIsGenerating(true);
-    setCurrentPhase('generating');
-    setError('');
-    setGeneratedPlan(null);
+  const code = async () => {
+    setShowPlans(false);
+    setIsLoading(true);
+    setPhase('coding');
 
     try {
-      const { error: projectError, data: app } = await supabase.from('projects')
-        .insert([{
-          user_id: user?.id,
-          name: name || 'Untitled Project',
-          description: prompt
-        }])
-        .select()
-        .single();
-
-      if (projectError) throw projectError;
-      setSelectedAppId(app?.id || null);
-
-      const aiPlan = await generateWithGemini(prompt, name, "plan");
-
-      const plan: Plan = {
-        name: name,
-        uiPlan: aiPlan.uiPlan,
-        flowPlan: aiPlan.flowPlan,
-        prerequisites: aiPlan.prerequisites
-      };
-
-      setGeneratedPlan(plan);
-      setCurrentPhase('complete');
-      toast.success("Plan generated successfully!");
-
-    } catch (error: any) {
-      console.error('Error generating plan:', error);
-      setError(error.message || 'Failed to generate plan. Please try again.');
-      toast.error(error.message || 'Failed to generate plan. Please try again.');
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
-  const generateCode = async () => {
-    if (!generatedPlan) {
-      toast.error("No plan available to generate code from.");
-      return;
-    }
-
-    setIsGeneratingCode(true);
-    try {
-      const codeResponse = await generateWithGemini(prompt, name, "code");
-      
-      if (!codeResponse.files) {
-        throw new Error('No files generated in AI response');
-      }
-
-      setGeneratedCode(codeResponse.files);
-      
-      // Save generated code to Supabase
-      if (selectedAppId) {
-        const { error } = await supabase
-          .from('projects')
-          .update({ 
-            generated_code: codeResponse.files,
-            uiPlan: generatedPlan.uiPlan,
-            flowPlan: generatedPlan.flowPlan,
-            prerequisites: generatedPlan.prerequisites,
-            name: name
-          })
-          .eq('id', selectedAppId);
-
-        if (error) throw error;
-      }
-
-      toast.success("Code generated and saved successfully!");
-    } catch (error: any) {
-      console.error('Error generating code:', error);
-      toast.error(error.message || 'Failed to generate code. Please try again.');
-    } finally {
-      setIsGeneratingCode(false);
-    }
-  };
-
-  const approvePlan = async () => {
-    if (!user) {
-      toast.error("You must be logged in to approve a plan.");
-      return;
-    }
-
-    if (!generatedPlan || !selectedAppId) {
-      toast.error("No plan to approve.");
-      return;
-    }
-
-    try {
-      const { error } = await supabase
-        .from('projects')
-        .update({
-          uiPlan: generatedPlan.uiPlan,
-          flowPlan: generatedPlan.flowPlan,
-          prerequisites: generatedPlan.prerequisites,
-          name: name
+      const codeResponse = await fetch(`${process.env.NEXT_PUBLIC_GEMINI_API_URL}?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: `${prompt}\n\nUI Plan:\n${generatedUIPlan}\n\nFlow Plan:\n${generatedFlowPlan}\n\nPrerequisites:\n${generatedLogicPlan}\n\nGenerate the complete code for the app described above in plain HTML, CSS, JS no other frameworks. Provide the full code formatted EXACTLY like this:\n\nHTML:\n[your html code]\n\nCSS:\n[your css code]\n\nJS:\n[your javascript code]\n\nDo not include any explanations. Only provide the code sections.`
+            }]
+          }],
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 8000,
+          }
         })
-        .eq('id', selectedAppId);
+      });
 
-      if (error) throw error;
+      if (!codeResponse.ok) {
+        throw new Error(`Code generation error: ${codeResponse.statusText}`);
+      }
 
-      toast.success("Plan approved and saved!");
-      fetchProjects();
+      const codeData = await codeResponse.json();
+
+      if (!codeData.candidates || !codeData.candidates[0] || !codeData.candidates[0].content) {
+        throw new Error('Invalid code response structure');
+      }
+
+      const codeText = codeData.candidates[0].content.parts[0].text;
+
+      // Parse the generated code
+      const htmlMatch = codeText.match(/HTML:(.*?)(?=CSS:|JS:|$)/s);
+      const cssMatch = codeText.match(/CSS:(.*?)(?=JS:|$)/s);
+      const jsMatch = codeText.match(/JS:(.*?)$/s);
+
+      setGeneratedCode({
+        html: htmlMatch ? htmlMatch[1].trim() : '<!-- No HTML generated -->',
+        css: cssMatch ? cssMatch[1].trim() : '/* No CSS generated */',
+        js: jsMatch ? jsMatch[1].trim() : '// No JS generated'
+      });
+
+      setPhase('completed');
+      setIsLoading(false);
+      toast.success('Code generated successfully!');
     } catch (error) {
-      console.error('Error saving plan:', error);
-      toast.error("Failed to save plan. Please try again.");
+      console.error('Error generating code:', error);
+      toast.error('Error generating code');
+      setIsLoading(false);
     }
-  };
+  }
 
-  // Simple app runner without WebContainer
-  const runApp = async (codeToRun?: ProjectFiles) => {
-    const code = codeToRun || generatedCode;
-    if (Object.keys(code).length === 0) {
-      toast.error("No code generated yet. Please generate code first.");
-      return;
-    }
-
-    setIsRunning(true);
-    try {
-      // Create a simple HTML preview with the code
-      const appCode = code['src/App.tsx'] || '// No App code';
-      const mainCode = code['src/main.tsx'] || '// No main code';
-      const cssCode = code['src/index.css'] || '/* No CSS */';
-      
-      const htmlContent = `
+  // Create preview HTML
+  const getPreviewHTML = () => {
+    return `
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${name} - Preview</title>
-  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <style>${cssCode}</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${newAppName}</title>
+  <style>${generatedCode.css}</style>
 </head>
 <body>
-  <div id="root"></div>
-  <script type="text/babel">
-    // Simple React app based on generated code
-    const App = () => {
-      return (
-        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full">
-            <h1 className="text-3xl font-bold text-gray-800 mb-4">
-              ${name}
-            </h1>
-            <p className="text-gray-600 mb-6">
-              ${prompt}
-            </p>
-            <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-4">
-              <p className="text-green-800 text-sm">
-                ✅ Your application is ready! This is a preview of your React app.
-              </p>
-            </div>
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-              <p className="text-blue-800 text-sm">
-                <strong>Generated Features:</strong><br/>
-                • React with TypeScript<br/>
-                • Tailwind CSS styling<br/>
-                • Modern component architecture
-              </p>
-            </div>
-          </div>
-        </div>
-      );
-    };
-
-    ReactDOM.render(<App />, document.getElementById('root'));
-  </script>
+  ${generatedCode.html}
+  <script>${generatedCode.js}</script>
 </body>
-</html>`;
-
-      // Create blob and URL for the iframe
-      const blob = new Blob([htmlContent], { type: 'text/html' });
-      const url = URL.createObjectURL(blob);
-      setIframeUrl(url);
-      
-      toast.success("App preview loaded!");
-    } catch (error) {
-      console.error('Error running app:', error);
-      toast.error("Failed to load app preview. Please try again.");
-    } finally {
-      setIsRunning(false);
-    }
+</html>
+    `;
   };
-
-  const openProjectSheet = (projectId: number) => {
-    setOpenSheets(prev => ({ ...prev, [projectId]: true }));
-  };
-
-  const closeProjectSheet = (projectId: number) => {
-    setOpenSheets(prev => ({ ...prev, [projectId]: false }));
-  };
-
-  const loadProjectCode = (project: SavedProject) => {
-    if (project.generated_code) {
-      setGeneratedCode(project.generated_code);
-      setProjectName(project.name);
-      setPrompt(project.description);
-      setGeneratedPlan({
-        name: project.name,
-        uiPlan: project.uiPlan || '',
-        flowPlan: project.flowPlan || '',
-        prerequisites: project.prerequisites || ''
-      });
-    }
-  };
-
-  // Fallback default code structure
-  const getDefaultCodeStructure = (): ProjectFiles => ({
-    "package.json": JSON.stringify({
-      name: name.toLowerCase().replace(/\s+/g, '-'),
-      private: true,
-      version: "0.0.0",
-      type: "module",
-      scripts: {
-        dev: "vite",
-        build: "vite build",
-        preview: "vite preview"
-      },
-      dependencies: {
-        react: "^18.2.0",
-        "react-dom": "^18.2.0"
-      },
-      devDependencies: {
-        "@types/react": "^18.2.0",
-        "@types/react-dom": "^18.2.0",
-        "@vitejs/plugin-react": "^4.0.0",
-        typescript: "^5.0.0",
-        vite: "^4.4.0",
-        tailwindcss: "^3.3.0",
-        autoprefixer: "^10.4.0",
-        postcss: "^8.4.0"
-      }
-    }, null, 2),
-    "index.html": `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${name}</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>`,
-    "src/main.tsx": `import React from 'react'
-import ReactDOM from 'react-dom/client'
-import App from './App.tsx'
-import './index.css'
-
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-)`,
-    "src/App.tsx": `import React from 'react'
-
-function App() {
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
-      <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full">
-        <h1 className="text-3xl font-bold text-gray-800 mb-4">
-          ${name}
-        </h1>
-        <p className="text-gray-600 mb-6">
-          ${prompt}
-        </p>
-        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-          <p className="text-green-800 text-sm">
-            Your application is running successfully! Start building your amazing idea.
-          </p>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-export default App`,
-    "src/index.css": `@tailwind base;
-@tailwind components;
-@tailwind utilities;`,
-    "tailwind.config.js": `/** @type {import('tailwindcss').Config} */
-export default {
-  content: [
-    "./index.html",
-    "./src/**/*.{js,ts,jsx,tsx}",
-  ],
-  theme: {
-    extend: {},
-  },
-  plugins: [],
-}`,
-    "vite.config.ts": `import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
-
-// https://vitejs.dev/config/
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    port: 5173,
-    host: true
-  }
-})`,
-    "tsconfig.json": `{
-  "compilerOptions": {
-    "target": "ES2020",
-    "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
-    "skipLibCheck": true,
-    "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "noEmit": true,
-    "jsx": "react-jsx",
-    "strict": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
-  },
-  "include": ["src"],
-  "references": [{ "path": "./tsconfig.node.json" }]
-}`,
-    "tsconfig.node.json": `{
-  "compilerOptions": {
-    "composite": true,
-    "skipLibCheck": true,
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "allowSyntheticDefaultImports": true
-  },
-  "include": ["vite.config.ts"]
-}`
-  });
 
   return (
     <div className="p-6">
-      <div className="m-auto w-1/2 p-[50px]">
-        <p className="text-start text-7xl font-semibold">build what Stands out...</p>
+      <div className={"m-auto max-w-2xl transition-all duration-300 " + `${showProjects ? '' : 'mt-[10%]'}`}>
+        <p className="text-5xl text-start font-semibold">Build something <span className="font-[800]">Perfect</span></p>
+        <Textarea placeholder="Describe your app idea and generate a plan and code with AI." className="mb-4 h-45 resize-none mt-5" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+        <Button size="lg" className="w-full" onClick={() => setMagicSheet(true)}>
+          <Sparkles className="mr-2" />
+          {isLoading ? (phase === 'planning' ? 'Planning...' : phase === 'coding' ? 'Coding...' : 'Completed!') : `Show magic to ${user?.firstName}`}
+        </Button>
+      </div>
 
-        <Textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Describe your idea here..."
-          className={"resize-none overflow-hidden max-h-[360px] min-h-[40px] p-4 focus-visible:outline-none focus-visible:ring-2 text-2xl focus-visible:ring-blue-600 " + `${isGenerating ? 'mt-[20%]' : 'mt-8'}`}
-          rows={1}
-        />
-        <p className="text-center">&</p>
-        <Sheet>
-          <SheetTrigger asChild>
-            <Button className="flex gap-3 mt-2 w-full p-7" onClick={handleGenerate} disabled={!prompt || isGenerating} size={'lg'}>
-              {isGenerating ? <Loader2 className="animate-spin" /> : <Sparkles />}
-              {isGenerating ? 'Generating...' : 'Let the Magic happen!'}
-            </Button>
-          </SheetTrigger>
-          <SheetContent className="w-[100%] p-6 overflow-y-scroll">
-            <SheetHeader>
-              <SheetTitle>Project Plan</SheetTitle>
-              <Input
-                placeholder="Enter Project Name"
-                value={name}
-                onChange={(e) => setProjectName(e.target.value)}
-              />
-            </SheetHeader>
+      <br />
 
-            <p className="border-b border-gray-300 py-4">
-              {prompt}
-            </p>
+      <div className="m-auto max-w-2xl">
+        <Button variant={'secondary'} onClick={() => setShowProjects(!showProjects)}>
+          {showProjects ? 'Hide Projects' : 'Show Projects'}
+        </Button>
+      </div>
+      <br />
+      {showProjects === true && (
+        <div className="m-auto max-w-2xl space-y-2">
+          {projects.length === 0 ? (
+            <p className="text-center text-gray-500 py-8">No projects yet. Create your first one!</p>
+          ) : (
+            projects.map((proj: any) => (
+              <div
+                className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
+                key={proj.id}
+              >
+                <p className="text-xl font-semibold">{proj.name}</p>
+                <p className="text-gray-600">{proj.description}</p>
+              </div>
+            ))
+          )}
+        </div>
+      )}
 
-            {isGenerating && (
-              <div className="mt-6 flex items-center justify-center">
-                <div className="flex items-center gap-3">
-                  <Loader2 className="w-6 h-6 animate-spin" />
-                  <span className="text-lg">Generating your plan with AI...</span>
-                </div>
+      <Sheet open={magicSheet} onOpenChange={setMagicSheet}>
+        <SheetContent className="overflow-y-auto p-6 sm:max-w-[800px]">
+          <SheetHeader>
+            <SheetTitle className="mb-4 text-3xl font-semibold">Create your project</SheetTitle>
+          </SheetHeader>
+          <div className="space-y-4">
+            {phase === 'planning' && showPlans && (
+              <>
+                <Input placeholder="Project Name" value={newAppName} onChange={(e) => setNewAppName(e.target.value)} />
+                <Textarea placeholder="Describe your app idea and generate a plan and code with AI." className="h-45 resize-none" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+                <Button size="lg" className="w-full p-6" onClick={handleGenerate} disabled={isLoading}>
+                  <Sparkles className="mr-2" />
+                  Generate Plan & Code
+                </Button>
+              </>
+            )}
+            {formError && <p className="text-sm text-red-500">{formError}</p>}
+
+            {isLoading && phase === 'planning' && (
+              <div className="mt-4 flex items-center">
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                <p>Generating plan...</p>
               </div>
             )}
 
-            <Card className="mt-6">
-              <CardHeader>
-                <CardTitle>Implementation Plan</CardTitle>
-                <CardDescription>
-                  AI-generated plan for your application
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {error ? (
-                  <p className="text-red-500">{error}</p>
-                ) : generatedPlan ? (
-                  <div className="space-y-6">
-                    <div className="flex gap-3">
-                      <Button
-                        onClick={() => setSelectedTab('uiPlan')}
-                        variant={selectedTab === 'uiPlan' ? 'default' : 'ghost'}
-                      >
-                        UI Plan
-                      </Button>
-                      <Button
-                        onClick={() => setSelectedTab('flowPlan')}
-                        variant={selectedTab === 'flowPlan' ? 'default' : 'ghost'}
-                      >
-                        Flow Plan
-                      </Button>
-                      <Button
-                        onClick={() => setSelectedTab('prerequisites')}
-                        variant={selectedTab === 'prerequisites' ? 'default' : 'ghost'}
-                      >
-                        Prerequisites
-                      </Button>
-                    </div>
-
-                    {selectedTab === 'uiPlan' && (
-                      <div>
-                        <h3 className="text-lg font-semibold mb-3">UI Plan</h3>
+            {(generatedUIPlan || generatedFlowPlan || generatedLogicPlan) && showPlans && !isLoading && (
+              <>
+                <Card className="mt-4">
+                  <Tabs defaultValue="ui" className="w-full">
+                    <TabsList className="grid w-full grid-cols-3">
+                      <TabsTrigger value="ui">UI Plan</TabsTrigger>
+                      <TabsTrigger value="flow">Flow Plan</TabsTrigger>
+                      <TabsTrigger value="logic">Prerequisites</TabsTrigger>
+                    </TabsList>
+                    <TabsContent value="ui">
+                      <CardHeader>
+                        <CardTitle className="flex items-center"><FileText className="mr-2" /> UI Plan</CardTitle>
+                        <CardDescription>Detailed user interface design plan including layout, components, and user experience</CardDescription>
+                      </CardHeader>
+                      <CardContent>
                         <Textarea
-                          value={generatedPlan.uiPlan}
-                          onChange={(e) => setGeneratedPlan({
-                            ...generatedPlan,
-                            uiPlan: e.target.value
-                          })}
-                          className="min-h-[400px] font-mono text-sm"
+                          value={generatedUIPlan}
+                          readOnly
+                          className="font-mono resize-none h-[400px]"
+                        />
+                      </CardContent>
+                    </TabsContent>
+                    <TabsContent value="flow">
+                      <CardHeader>
+                        <CardTitle className="flex items-center"><FileText className="mr-2" /> Flow Plan</CardTitle>
+                        <CardDescription>User flow and navigation structure</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <Textarea
+                          value={generatedFlowPlan}
+                          readOnly
+                          className="font-mono resize-none h-[400px]"
+                        />
+                      </CardContent>
+                    </TabsContent>
+                    <TabsContent value="logic">
+                      <CardHeader>
+                        <CardTitle className="flex items-center"><FileText className="mr-2" /> Prerequisites</CardTitle>
+                        <CardDescription>Logic handling, dependencies and setup needed</CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        <Textarea
+                          value={generatedLogicPlan}
+                          readOnly
+                          className="font-mono resize-none h-[400px]"
+                        />
+                      </CardContent>
+                    </TabsContent>
+                  </Tabs>
+                </Card>
+                <Button size="lg" className="w-full" onClick={code} disabled={isLoading}>
+                  <Check className="mr-2" />
+                  Approve & Generate Code
+                </Button>
+              </>
+            )}
+
+            {isLoading && phase === 'coding' && (
+              <div className="mt-4 flex items-center">
+                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                <p>Generating code...</p>
+              </div>
+            )}
+
+            {!showPlans && phase !== 'planning' && (
+              <Card className="mt-4">
+                <Tabs defaultValue="code" className="w-full">
+                  <TabsList className="grid w-full grid-cols-2">
+                    <TabsTrigger value="code">
+                      <Code className="mr-2 h-4 w-4" />
+                      Code
+                    </TabsTrigger>
+                    <TabsTrigger value="preview">
+                      <Play className="mr-2 h-4 w-4" />
+                      Preview
+                    </TabsTrigger>
+                  </TabsList>
+
+                  <TabsContent value="code">
+                    <CardHeader>
+                      <CardTitle>Generated Code</CardTitle>
+                      <CardDescription>View and copy your generated code</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <Tabs defaultValue="html" className="w-full">
+                        <TabsList className="grid w-full grid-cols-3">
+                          <TabsTrigger value="html">HTML</TabsTrigger>
+                          <TabsTrigger value="css">CSS</TabsTrigger>
+                          <TabsTrigger value="js">JavaScript</TabsTrigger>
+                        </TabsList>
+                        <TabsContent value="html">
+                          <Textarea
+                            value={generatedCode.html}
+                            onChange={(e) => setGeneratedCode({ ...generatedCode, html: e.target.value })}
+                            className="font-mono text-sm resize-none h-[500px]"
+                          />
+                        </TabsContent>
+                        <TabsContent value="css">
+                          <Textarea
+                            value={generatedCode.css}
+                            onChange={(e) => setGeneratedCode({ ...generatedCode, css: e.target.value })}
+                            className="font-mono text-sm resize-none h-[500px]"
+                          />
+                        </TabsContent>
+                        <TabsContent value="js">
+                          <Textarea
+                            value={generatedCode.js}
+                            onChange={(e) => setGeneratedCode({ ...generatedCode, js: e.target.value })}
+                            className="font-mono text-sm resize-none h-[500px]"
+                          />
+                        </TabsContent>
+                      </Tabs>
+                    </CardContent>
+                  </TabsContent>
+
+                  <TabsContent value="preview">
+                    <CardHeader>
+                      <CardTitle>Live Preview</CardTitle>
+                      <CardDescription>Preview your generated application</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="border rounded-lg overflow-hidden">
+                        <iframe
+                          srcDoc={getPreviewHTML()}
+                          className="w-full h-[500px] bg-white"
+                          title="App Preview"
+                          sandbox="allow-scripts"
                         />
                       </div>
-                    )}
-
-                    {selectedTab === 'flowPlan' && (
-                      <div>
-                        <h3 className="text-lg font-semibold mb-3">Flow Plan</h3>
-                        <Textarea
-                          value={generatedPlan.flowPlan}
-                          onChange={(e) => setGeneratedPlan({
-                            ...generatedPlan,
-                            flowPlan: e.target.value
-                          })}
-                          className="min-h-[400px] font-mono text-sm"
-                        />
-                      </div>
-                    )}
-
-                    {selectedTab === 'prerequisites' && (
-                      <div>
-                        <h3 className="text-lg font-semibold mb-3">Prerequisites</h3>
-                        <Textarea
-                          value={generatedPlan.prerequisites}
-                          onChange={(e) => setGeneratedPlan({
-                            ...generatedPlan,
-                            prerequisites: e.target.value
-                          })}
-                          className="min-h-[400px] font-mono text-sm"
-                        />
-                      </div>
-                    )}
-
-                    <div className="flex gap-3">
-                      <Button
-                        className="flex gap-2"
-                        onClick={approvePlan}
-                        disabled={isGenerating}
-                      >
-                        <Check /> Approve & Save Plan
-                      </Button>
-                      
-                      <Button
-                        className="flex gap-2"
-                        onClick={generateCode}
-                        disabled={isGeneratingCode}
-                        variant="outline"
-                      >
-                        {isGeneratingCode ? <Loader2 className="animate-spin" /> : <Code />}
-                        {isGeneratingCode ? 'Generating Code...' : 'Generate Code'}
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  !isGenerating && <p className="text-gray-500">No plan generated yet.</p>
-                )}
-              </CardContent>
-            </Card>
-
-            {(Object.keys(generatedCode).length > 0 || isGeneratingCode) && (
-              <Card className="mt-6">
-                <CardHeader>
-                  <CardTitle>Generated Code</CardTitle>
-                  <CardDescription>
-                    AI-generated React application code
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex gap-3 mb-4">
-                    <Button
-                      onClick={() => runApp()}
-                      disabled={isRunning || Object.keys(generatedCode).length === 0}
-                      className="flex gap-2"
-                    >
-                      {isRunning ? <Loader2 className="animate-spin" /> : <Play />}
-                      {isRunning ? 'Starting...' : 'Run App Preview'}
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="flex gap-2"
-                      onClick={() => {
-                        if (selectedAppId) {
-                          supabase
-                            .from('projects')
-                            .update({ generated_code: generatedCode })
-                            .eq('id', selectedAppId)
-                            .then(() => toast.success("Code updated!"));
-                        }
-                      }}
-                      disabled={Object.keys(generatedCode).length === 0}
-                    >
-                      <Save size={16} />
-                      Save Code
-                    </Button>
-                  </div>
-
-                  {Object.keys(generatedCode).length > 0 ? (
-                    <div className="border rounded-lg overflow-hidden">
-                      <Editor
-                        height="400px"
-                        defaultLanguage="typescript"
-                        value={generatedCode['src/App.tsx'] || '// No code generated'}
-                        onChange={(value) => {
-                          setGeneratedCode(prev => ({
-                            ...prev,
-                            'src/App.tsx': value || ''
-                          }));
-                        }}
-                        options={{
-                          minimap: { enabled: false },
-                          fontSize: 14,
-                          lineNumbers: 'on',
-                          scrollBeyondLastLine: false,
-                          automaticLayout: true,
-                        }}
-                      />
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-center h-40">
-                      <Loader2 className="w-8 h-8 animate-spin mr-2" />
-                      <span>Generating code...</span>
-                    </div>
-                  )}
-
-                  {iframeUrl && (
-                    <div className="mt-4">
-                      <h3 className="text-lg font-semibold mb-2">Live Preview</h3>
-                      <iframe
-                        src={iframeUrl}
-                        className="w-full h-96 border rounded-lg"
-                        sandbox="allow-scripts allow-same-origin"
-                        title="App Preview"
-                      />
-                    </div>
-                  )}
-                </CardContent>
+                    </CardContent>
+                  </TabsContent>
+                </Tabs>
               </Card>
             )}
 
-            <SheetFooter className="mt-6">
-              <Button
-                variant={'outline'}
-                onClick={approvePlan}
-                className="flex gap-2 py-5"
-                disabled={!generatedPlan || isGenerating}
-              >
-                <Save /> Save Plan
-              </Button>
-            </SheetFooter>
-          </SheetContent>
-        </Sheet>
-      </div>
-
-      {/* Saved Projects List */}
-      {projects.map((project) => (
-        <Sheet 
-          key={project.id} 
-          open={openSheets[project.id] || false}
-          onOpenChange={(open) => {
-            if (open) {
-              openProjectSheet(project.id);
-              loadProjectCode(project);
-            } else {
-              closeProjectSheet(project.id);
-            }
-          }}
-        >
-          <SheetTrigger asChild>
-            <div className="m-auto cursor-pointer w-1/2 p-[20px] border-t border-gray-300 hover:bg-gray-50 transition-colors">
-              <div className="flex justify-between items-start mb-3">
-                <div className="flex gap-2">
-                  <Trash2 
-                    size={17} 
-                    className="hover:text-red-500 cursor-pointer" 
-                    onClick={async (e) => { 
-                      e.stopPropagation();
-                      await supabase.from('projects').delete().eq('id', project.id); 
-                      fetchProjects(); 
-                      toast.success("Project deleted");
-                    }} 
-                  />
-                  {project.generated_code && (
-                    <Code size={17} className="text-green-600" />
-                  )}
-                </div>
-                <ExternalLink size={17} className="text-gray-400" />
+            {phase === 'completed' && (
+              <div className="flex gap-2">
+                <Button variant="outline" className="flex-1" onClick={() => {
+                  setPhase('planning');
+                  setShowPlans(true);
+                  setGeneratedCode({ html: '', css: '', js: '' });
+                  setGeneratedUIPlan('');
+                  setGeneratedFlowPlan('');
+                  setGeneratedLogicPlan('');
+                  setNewAppName('');
+                  setPrompt('');
+                }}>
+                  <Sparkles className="mr-2" />
+                  New Project
+                </Button>
+                <Button className="flex-1" onClick={async () => {
+                  if (!user) {
+                    toast.error('You must be logged in to save a project');
+                    return;
+                  }
+                  if (!newAppName || !prompt || !generatedCode.html) {
+                    toast.error('Missing project data');
+                    return;
+                  }
+                  const { error } = await supabase.from('projects').insert([{
+                    user_id: user.id,
+                    name: newAppName,
+                    description: prompt,
+                    uiPlan: generatedUIPlan,
+                    flowPlan: generatedFlowPlan,
+                    prerequisites: generatedLogicPlan,
+                    generated_code: { html: generatedCode.html, css: generatedCode.css, js: generatedCode.js }
+                  }]);
+                  if (error) {
+                    console.error('Error saving project:', error);
+                    toast.error('Error saving project');
+                  } else {
+                    toast.success('Project saved successfully!');
+                    await fetchProjects(); // Add this line
+                    setMagicSheet(false);
+                  }
+                }}>
+                  <Save className="mr-2" />
+                  Save Project
+                </Button>
               </div>
-              <p className="text-start text-4xl font-semibold">{project.name}</p>
-              <p className="text-start text-xl font-light">{project.description}</p>
-              <p className="text-start text-sm text-gray-500 mt-2">
-                {new Date(project.created_at).toLocaleDateString()}
-                {project.generated_code && " • Code Generated"}
-              </p>
-            </div>
-          </SheetTrigger>
-          <SheetContent className="w-[100%] p-6 overflow-y-scroll">
-            <SheetHeader>
-              <SheetTitle>{project.name}</SheetTitle>
-              <p className="text-sm text-gray-600">{project.description}</p>
-            </SheetHeader>
-
-            <div className="p-5 mt-6 flex gap-3">
-              <Button 
-                variant={selectedEditTab === 'overview' ? 'default' : 'ghost'} 
-                onClick={() => setSelectedEditTab('overview')}
-              >
-                Overview
-              </Button>
-              <Button 
-                variant={selectedEditTab === 'code' ? 'default' : 'ghost'} 
-                onClick={() => setSelectedEditTab('code')}
-                disabled={!project.generated_code}
-              >
-                Code {project.generated_code && "✓"}
-              </Button>
-            </div>
-
-            <Card className="mt-3">
-              <CardContent className="pt-6">
-                {selectedEditTab === 'overview' && (
-                  <div>
-                    <div className="flex gap-3 mb-4">
-                      <Button 
-                        variant={selectedTab === 'uiPlan' ? 'default' : 'outline'} 
-                        onClick={() => setSelectedTab('uiPlan')}
-                      >
-                        UI Plan
-                      </Button>
-                      <Button 
-                        variant={selectedTab === 'flowPlan' ? 'default' : 'outline'} 
-                        onClick={() => setSelectedTab('flowPlan')}
-                      >
-                        Flow Plan
-                      </Button>
-                      <Button 
-                        variant={selectedTab === 'prerequisites' ? 'default' : 'outline'} 
-                        onClick={() => setSelectedTab('prerequisites')}
-                      >
-                        Prerequisites
-                      </Button>
-                    </div>
-
-                    <div className="space-y-4">
-                      {selectedTab === 'uiPlan' && (
-                        <Textarea
-                          value={project.uiPlan || 'No UI Plan available.'}
-                          onChange={async (e) => {
-                            const { error } = await supabase
-                              .from('projects')
-                              .update({ uiPlan: e.target.value })
-                              .eq('id', project.id);
-                            if (error) {
-                              toast.error('Failed to save changes');
-                            } else {
-                              toast.success('Changes saved');
-                              fetchProjects();
-                            }
-                          }}
-                          className="min-h-[400px] font-mono text-sm"
-                        />
-                      )}
-                      {selectedTab === 'flowPlan' && (
-                        <Textarea
-                          value={project.flowPlan || 'No Flow Plan available.'}
-                          onChange={async (e) => {
-                            const { error } = await supabase
-                              .from('projects')
-                              .update({ flowPlan: e.target.value })
-                              .eq('id', project.id);
-                            if (error) {
-                              toast.error('Failed to save changes');
-                            } else {
-                              toast.success('Changes saved');
-                              fetchProjects();
-                            }
-                          }}
-                          className="min-h-[400px] font-mono text-sm"
-                        />
-                      )}
-                      {selectedTab === 'prerequisites' && (
-                        <Textarea
-                          value={project.prerequisites || 'No Prerequisites available.'}
-                          onChange={async (e) => {
-                            const { error } = await supabase
-                              .from('projects')
-                              .update({ prerequisites: e.target.value })
-                              .eq('id', project.id);
-                            if (error) {
-                              toast.error('Failed to save changes');
-                            } else {
-                              toast.success('Changes saved');
-                              fetchProjects();
-                            }
-                          }}
-                          className="min-h-[400px] font-mono text-sm"
-                        />
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {selectedEditTab === 'code' && project.generated_code && (
-                  <div className="space-y-4">
-                    <Button
-                      onClick={() => runApp(project.generated_code)}
-                      disabled={isRunning}
-                      className="flex gap-2"
-                    >
-                      {isRunning ? <Loader2 className="animate-spin" /> : <Play />}
-                      {isRunning ? 'Starting...' : 'Run App Preview'}
-                    </Button>
-
-                    <div className="border rounded-lg overflow-hidden">
-                      <Editor
-                        height="400px"
-                        defaultLanguage="typescript"
-                        value={project.generated_code['src/App.tsx'] || '// No code available'}
-                        options={{
-                          minimap: { enabled: false },
-                          fontSize: 14,
-                          lineNumbers: 'on',
-                          scrollBeyondLastLine: false,
-                          automaticLayout: true,
-                          readOnly: false
-                        }}
-                      />
-                    </div>
-
-                    {iframeUrl && (
-                      <div className="mt-4">
-                        <h3 className="text-lg font-semibold mb-2">Live Preview</h3>
-                        <iframe
-                          src={iframeUrl}
-                          className="w-full h-96 border rounded-lg"
-                          sandbox="allow-scripts allow-same-origin"
-                          title="App Preview"
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </SheetContent>
-        </Sheet>
-      ))}
+            )}
+          </div>
+          <SheetFooter className="mt-6">
+            <p className="text-sm text-muted-foreground">By using this feature, you agree to our Terms of Service and Privacy Policy.</p>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
