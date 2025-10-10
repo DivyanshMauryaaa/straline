@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import supabase from "@/lib/supabase";
 import { useUser } from "@clerk/nextjs";
 import { Save, Sparkles, Check, Loader2, Trash2, Play, Code, ExternalLink, FileText } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -250,13 +251,14 @@ Be specific and practical. For project: "${projectName}" and idea: "${userPrompt
             <p className="text-center text-gray-500 py-8">No projects yet. Create your first one!</p>
           ) : (
             projects.map((proj: any) => (
-              <div
-                className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
-                key={proj.id}
-              >
-                <p className="text-xl font-semibold">{proj.name}</p>
-                <p className="text-gray-600">{proj.description}</p>
-              </div>
+              <Link href={`/projects/${proj.id}`} target="_blank" key={proj.id} className="block">
+                <div
+                  className="border rounded-lg p-4 hover:bg-gray-50 cursor-pointer transition-colors"
+                >
+                  <p className="text-xl font-semibold">{proj.name}</p>
+                  <p className="text-gray-600">{proj.description.slice(0, 100)}...</p>
+                </div>
+              </Link>
             ))
           )}
         </div>
@@ -304,7 +306,7 @@ Be specific and practical. For project: "${projectName}" and idea: "${userPrompt
                       <CardContent>
                         <Textarea
                           value={generatedUIPlan}
-                          readOnly
+                          onChange={(e) => setGeneratedUIPlan(e.target.value)}
                           className="font-mono resize-none h-[400px]"
                         />
                       </CardContent>
@@ -317,7 +319,7 @@ Be specific and practical. For project: "${projectName}" and idea: "${userPrompt
                       <CardContent>
                         <Textarea
                           value={generatedFlowPlan}
-                          readOnly
+                          onChange={(e) => setGeneratedFlowPlan(e.target.value)}
                           className="font-mono resize-none h-[400px]"
                         />
                       </CardContent>
@@ -330,7 +332,7 @@ Be specific and practical. For project: "${projectName}" and idea: "${userPrompt
                       <CardContent>
                         <Textarea
                           value={generatedLogicPlan}
-                          readOnly
+                          onChange={(e) => setGeneratedLogicPlan(e.target.value)}
                           className="font-mono resize-none h-[400px]"
                         />
                       </CardContent>
