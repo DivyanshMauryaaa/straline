@@ -8,9 +8,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import supabase from "@/lib/supabase";
 import { useUser } from "@clerk/nextjs";
-import { Save, Sparkles, Check, Loader2, Play, Code, FileText, X, PlayCircle } from "lucide-react";
+import { Save, Sparkles, Check, Loader2, Play, Code, FileText, X, PlayCircle, FolderOpen, Eye } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { toast } from "sonner";
 
 // Initial file structure matching the project page
@@ -92,70 +92,100 @@ interface AIPlan {
   summary: string;
 }
 
+type ProjectPhase = 'planning' | 'coding' | 'completed';
+
+interface ProjectState {
+  phase: ProjectPhase;
+  isLoading: boolean;
+  showPlans: boolean;
+  generatedPlan: AIPlan | null;
+  editableInstructions: string;
+  showPlanApproval: boolean;
+  generatedCode: { [key: string]: string };
+}
+
+const INITIAL_PROJECT_STATE: ProjectState = {
+  phase: 'planning',
+  isLoading: false,
+  showPlans: true,
+  generatedPlan: null,
+  editableInstructions: '',
+  showPlanApproval: false,
+  generatedCode: initialFiles
+};
+
 export default function Home() {
   const [showProjects, setShowProjects] = useState(false);
   const [magicSheet, setMagicSheet] = useState(false);
   const [prompt, setPrompt] = useState('');
   const [newAppName, setNewAppName] = useState('');
+  const [formError, setFormError] = useState('');
+  const [projects, setProjects] = useState<any[]>([]);
+  
+  const [projectState, setProjectState] = useState<ProjectState>(INITIAL_PROJECT_STATE);
   const { user } = useUser();
 
-  const [phase, setPhase] = useState('planning'); // planning, coding, completed
-  const [isLoading, setIsLoading] = useState(false);
-  const [formError, setFormError] = useState('');
-  const [showPlans, setShowPlans] = useState(true);
+  // Memoized project state values
+  const { 
+    phase, isLoading, showPlans, generatedPlan, 
+    editableInstructions, showPlanApproval, generatedCode 
+  } = projectState;
 
-  const [generatedPlan, setGeneratedPlan] = useState<AIPlan | null>(null);
-  const [editableInstructions, setEditableInstructions] = useState('');
-  const [showPlanApproval, setShowPlanApproval] = useState(false);
-
-  const [generatedCode, setGeneratedCode] = useState(initialFiles);
-  const [projects, setProjects] = useState<any[]>([]);
-
-  const fetchProjects = async () => {
+  // Fetch projects with useCallback to prevent unnecessary re-renders
+  const fetchProjects = useCallback(async () => {
     if (!user) return;
-    const { data, error } = await supabase
-      .from('projects')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false });
+    
+    try {
+      const { data, error } = await supabase
+        .from('projects')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
 
-    if (error) {
-      console.error('Error fetching projects:', error);
-      return;
+      if (error) {
+        console.error('Error fetching projects:', error);
+        return;
+      }
+      setProjects(data || []);
+    } catch (error) {
+      console.error('Error in fetchProjects:', error);
     }
-    setProjects(data || []);
-  }
+  }, [user]);
 
   useEffect(() => {
     if (user) {
       fetchProjects();
     }
-  }, [user]);
+  }, [user, fetchProjects]);
 
-  const handleGenerate = () => {
-    if (!newAppName) {
+  // Reset project state
+  const resetProjectState = useCallback(() => {
+    setProjectState(INITIAL_PROJECT_STATE);
+    setNewAppName('');
+    setPrompt('');
+    setFormError('');
+  }, []);
+
+  // Validate form inputs
+  const validateForm = useCallback(() => {
+    if (!newAppName.trim()) {
       setFormError('Project name is required');
-      return;
+      return false;
     }
-    if (!prompt) {
+    if (!prompt.trim()) {
       setFormError('Project description is required');
-      return;
+      return false;
     }
     setFormError('');
-    setIsLoading(true);
-    setPhase('planning');
-    setShowPlans(true);
+    return true;
+  }, [newAppName, prompt]);
 
-    plan(newAppName, prompt);
-  }
-
-  const plan = async (projectName: string, userPrompt: string) => {
-    const systemPrompt = `You are an expert UX/UI designer and product architect. Your job is to understand the user's request and provide EXTREMELY SPECIFIC implementation instructions WITHOUT deciding which files to modify.
+  // Generate AI plan
+  const plan = useCallback(async (projectName: string, userPrompt: string) => {
+    const systemPrompt = `You are an expert UX/UI designer and product architect. Your job is to understand the user's request and provide EXTREMELY SPECIFIC implementation instructions.
 
 USER REQUEST: ${userPrompt}
 PROJECT NAME: ${projectName}
-
-Your job is to be PRECISE about WHAT needs to change, not WHERE:
 
 # PRECISE IMPLEMENTATION INSTRUCTIONS
 
@@ -165,103 +195,95 @@ Your job is to be PRECISE about WHAT needs to change, not WHERE:
 ## SPECIFIC CHANGES REQUIRED
 
 ### Visual/UI Changes:
-- If they say "colorful button" → specify EXACTLY: "Make the button background color #3B82F6 (blue), text white, with rounded corners (8px radius)"
-- If they say "bigger text" → specify: "Increase font size to 24px for headings, 16px for body text"
-- If they say "nice layout" → specify: "Use a centered flex container with 32px gap between elements, max-width 800px"
-- BE SPECIFIC about colors (use hex codes), sizes (use px/rem), spacing (exact values)
+- Be specific about colors (use hex codes), sizes (use px/rem), spacing (exact values)
+- Example: "Make the button background color #3B82F6, text white, with 8px border-radius"
 
 ### Functional Changes:
-- If they want a feature → describe EXACTLY what it should do step by step
-- If they want interactivity → specify the exact behavior: "When button is clicked, show a message 'Success!' in green text below the button"
-- If they want data handling → specify exact data structure and flow
+- Describe exactly what should happen step by step
+- Example: "When button is clicked, show a success message in green text"
 
 ### Content Changes:
-- If they mention text changes → provide the EXACT text to use
-- If they want images/icons → specify what should be displayed and how
+- Provide exact text to use
+- Specify images/icons and their placement
 
 ### Styling Details:
-- Colors: Use exact hex codes (e.g., #3B82F6, not "blue")
-- Spacing: Use exact values (e.g., "24px padding", not "good spacing")
-- Sizes: Use exact measurements (e.g., "48px height", not "tall button")
-- Typography: Specify font sizes, weights, and families exactly
-
-## IMPLEMENTATION REQUIREMENTS
-- List any specific interactions or behaviors
-- Specify animation/transition details if relevant (e.g., "0.3s ease-in-out transition")
-- Describe responsive behavior if needed
+- Colors: Use exact hex codes (e.g., #3B82F6)
+- Spacing: Use exact values (e.g., "24px padding")
+- Sizes: Use exact measurements (e.g., "48px height")
 
 CRITICAL RULES:
 1. DO NOT mention file names or file paths
 2. DO NOT write actual code
-3. BE EXTREMELY SPECIFIC - no vague terms like "nice", "good", "better"
+3. BE EXTREMELY SPECIFIC - no vague terms
 4. Replace ALL vague requests with precise specifications
-5. Think like a designer giving pixel-perfect specifications to a developer
-6. If the user's request is vague, YOU make the specific design decisions for them
 
-Example Transformations:
-❌ "Make the button colorful" 
-✅ "Make the button background color #10B981 (emerald green), text color white (#FFFFFF), with a hover state that darkens to #059669"
-
-❌ "Add some spacing"
-✅ "Add 24px of padding inside the container and 16px margin between each element"
-
-❌ "Make it look modern"
-✅ "Use a clean design with: rounded corners (12px), subtle shadows (0 4px 6px rgba(0,0,0,0.1)), sans-serif font (Inter or system default), and a white (#FFFFFF) background with light gray (#F3F4F6) sections"
-
-Return ONLY the precise instructions. Be the design decision maker.`;
+Return ONLY the precise instructions.`;
 
     try {
-      const response = await fetch(`${process.env.NEXT_PUBLIC_GEMINI_API_URL}?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`, {
+      const response = await fetch('/api/generate-plan', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: systemPrompt
-            }]
-          }],
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 8000,
-          }
-        })
+          projectName,
+          userPrompt,
+          systemPrompt
+        }),
       });
 
       if (!response.ok) {
-        throw new Error(`Gemini API error: ${response.statusText}`);
+        throw new Error(`API error: ${response.statusText}`);
       }
 
       const data = await response.json();
-      const responseText = data.candidates[0].content.parts[0].text;
 
-      // Don't extract files - just store the instructions
-      setGeneratedPlan({
-        instructions: responseText,
-        files_to_modify: [], // Empty since planner doesn't decide files
-        summary: 'Precise implementation instructions generated'
-      });
-      setEditableInstructions(responseText);
-      setShowPlanApproval(true);
-      setIsLoading(false);
+      setProjectState(prev => ({
+        ...prev,
+        generatedPlan: {
+          instructions: data.instructions,
+          files_to_modify: [],
+          summary: 'Precise implementation instructions generated'
+        },
+        editableInstructions: data.instructions,
+        showPlanApproval: true,
+        isLoading: false
+      }));
+
       toast.success('Plan generated successfully!');
 
     } catch (error) {
       console.error('Error generating plan:', error);
-      toast.error(`${error}`);
-      setIsLoading(false);
-      throw error;
+      toast.error('Failed to generate plan');
+      setProjectState(prev => ({ ...prev, isLoading: false }));
     }
-  }
+  }, []);
 
-  const code = async () => {
-    setShowPlans(false);
-    setShowPlanApproval(false);
-    setIsLoading(true);
-    setPhase('coding');
+  // Handle generate button click
+  const handleGenerate = useCallback(() => {
+    if (!validateForm()) return;
 
-    const executionPrompt = `You are a precise code implementation AI. You will receive SPECIFIC design and functionality instructions. Your job is to implement them EXACTLY as described.
+    setProjectState(prev => ({
+      ...prev,
+      isLoading: true,
+      phase: 'planning',
+      showPlans: true
+    }));
+
+    plan(newAppName, prompt);
+  }, [newAppName, prompt, validateForm, plan]);
+
+  // Generate code from instructions
+  const code = useCallback(async () => {
+    setProjectState(prev => ({
+      ...prev,
+      showPlans: false,
+      showPlanApproval: false,
+      isLoading: true,
+      phase: 'coding'
+    }));
+
+    const executionPrompt = `You are a precise code implementation AI. Implement these instructions EXACTLY:
 
 PRECISE INSTRUCTIONS:
 ${editableInstructions}
@@ -269,104 +291,102 @@ ${editableInstructions}
 CURRENT CODEBASE:
 ${Object.entries(initialFiles).map(([path, content]) => `=== ${path} ===\n${content}\n`).join('\n')}
 
-YOUR JOB:
-1. Read the precise instructions carefully
-2. Decide which files need to be modified to implement these instructions
-3. Implement the changes EXACTLY as specified in the instructions
-4. If instructions say "button background #3B82F6", use EXACTLY that color
-5. If instructions say "24px padding", use EXACTLY that value
-6. Follow every specification to the pixel
-
 CRITICAL REACT RULES:
-- ALWAYS use proper React component syntax
-- Export components as: export default App (NOT export default App())
 - Use functional components: function App() { return (...) }
-- NEVER call the component as App() in exports
-- Use proper JSX syntax with className for CSS classes
-- Import React hooks if needed: import { useState, useEffect } from 'react'
-
-CRITICAL IMPLEMENTATION RULES:
-- YOU decide which files to modify based on what the instructions require
-- Implement ALL specifications exactly as written (colors, sizes, spacing, etc.)
-- Don't add features not mentioned in the instructions
-- Don't make design decisions - the instructions already have all design decisions
-- Return complete file contents for modified files only
-
-CORRECT COMPONENT EXPORT:
-✅ CORRECT:
-function App() {
-  return <div>Hello</div>;
-}
-export default App;
-
-❌ WRONG:
-export default App();
+- Export components as: export default App
+- Use proper JSX syntax with className
+- Import React hooks if needed
 
 Return ONLY valid JSON in this exact format:
-
 {
   "updated_files": {
     "src/App.tsx": "complete file content with changes",
     "src/index.css": "complete file content with changes"
   },
-  "execution_summary": "Brief description of which files were modified and why"
-}
-
-Return ONLY the JSON, no other text.`;
+  "execution_summary": "Brief description of changes"
+}`;
 
     try {
-      const codeResponse = await fetch(`${process.env.NEXT_PUBLIC_GEMINI_API_URL}?key=${process.env.NEXT_PUBLIC_GEMINI_API_KEY}`, {
+      const response = await fetch('/api/generate-code', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          contents: [{
-            parts: [{
-              text: executionPrompt
-            }]
-          }],
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 8000,
-          }
-        })
+          instructions: editableInstructions,
+          currentFiles: initialFiles,
+          executionPrompt
+        }),
       });
 
-      if (!codeResponse.ok) {
-        throw new Error(`Code generation error: ${codeResponse.statusText}`);
+      if (!response.ok) {
+        throw new Error(`Code generation error: ${response.statusText}`);
       }
 
-      const codeData = await codeResponse.json();
-      const codeText = codeData.candidates[0].content.parts[0].text;
+      const data = await response.json();
 
-      const jsonMatch = codeText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const result = JSON.parse(jsonMatch[0]);
-        setGeneratedCode({
+      setProjectState(prev => ({
+        ...prev,
+        generatedCode: {
           ...initialFiles,
-          ...result.updated_files
-        });
-      }
+          ...data.updated_files
+        },
+        phase: 'completed',
+        isLoading: false
+      }));
 
-      setPhase('completed');
-      setIsLoading(false);
       toast.success('Code generated successfully!');
     } catch (error) {
       console.error('Error generating code:', error);
       toast.error('Error generating code');
-      setIsLoading(false);
+      setProjectState(prev => ({ ...prev, isLoading: false }));
     }
-  }
+  }, [editableInstructions]);
 
-  const handleRejectPlan = () => {
-    setShowPlanApproval(false);
-    setGeneratedPlan(null);
-    setEditableInstructions('');
+  // Handle plan rejection
+  const handleRejectPlan = useCallback(() => {
+    setProjectState(prev => ({
+      ...prev,
+      showPlanApproval: false,
+      generatedPlan: null,
+      editableInstructions: ''
+    }));
     toast.info('Plan rejected. Feel free to try again.');
-  };
+  }, []);
 
-  const getPreviewHTML = () => {
+  // Save project to database
+  const handleSaveProject = useCallback(async () => {
+    if (!user) {
+      toast.error('You must be logged in to save a project');
+      return;
+    }
+    if (!newAppName || !prompt) {
+      toast.error('Missing project data');
+      return;
+    }
+
+    try {
+      const { error } = await supabase.from('projects').insert([{
+        user_id: user.id,
+        name: newAppName,
+        description: prompt,
+        code: generatedCode
+      }]);
+
+      if (error) throw error;
+
+      toast.success('Project saved successfully!');
+      await fetchProjects();
+      setMagicSheet(false);
+      resetProjectState();
+    } catch (error) {
+      console.error('Error saving project:', error);
+      toast.error('Error saving project');
+    }
+  }, [user, newAppName, prompt, generatedCode, fetchProjects, resetProjectState]);
+
+  // Memoized preview HTML
+  const previewHTML = useMemo(() => {
     const appCode = generatedCode['src/App.tsx'];
     const cssCode = generatedCode['src/index.css'];
 
@@ -402,7 +422,14 @@ Return ONLY the JSON, no other text.`;
 </body>
 </html>
     `;
-  };
+  }, [generatedCode, newAppName]);
+
+  // File tabs configuration
+  const fileTabs = useMemo(() => [
+    { value: 'app', label: 'App.tsx', content: generatedCode['src/App.tsx'] },
+    { value: 'css', label: 'index.css', content: generatedCode['src/index.css'] },
+    { value: 'config', label: 'Config', content: generatedCode['package.json'] }
+  ], [generatedCode]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -441,6 +468,7 @@ Return ONLY the JSON, no other text.`;
             onClick={() => setShowProjects(!showProjects)}
             className="gap-2"
           >
+            <FolderOpen className="w-4 h-4" />
             {showProjects ? 'Hide' : 'Show'} Projects
           </Button>
         </div>
@@ -523,17 +551,12 @@ Return ONLY the JSON, no other text.`;
                 </div>
               )}
 
-              {isLoading && phase === 'planning' && (
+              {isLoading && (
                 <div className="flex items-center gap-3 p-4 border rounded-lg bg-muted/50">
                   <Loader2 className="w-5 h-5 animate-spin" />
-                  <p className="font-medium">Generating plan...</p>
-                </div>
-              )}
-
-              {isLoading && phase === 'coding' && (
-                <div className="flex items-center gap-3 p-4 border rounded-lg bg-muted/50">
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  <p className="font-medium">Generating code...</p>
+                  <p className="font-medium">
+                    {phase === 'planning' ? 'Generating plan...' : 'Generating code...'}
+                  </p>
                 </div>
               )}
 
@@ -546,7 +569,7 @@ Return ONLY the JSON, no other text.`;
                         Code
                       </TabsTrigger>
                       <TabsTrigger value="preview" className="gap-2">
-                        <Play className="w-4 h-4" />
+                        <Eye className="w-4 h-4" />
                         Preview
                       </TabsTrigger>
                     </TabsList>
@@ -559,31 +582,29 @@ Return ONLY the JSON, no other text.`;
                       <CardContent>
                         <Tabs defaultValue="app" className="w-full">
                           <TabsList className="grid w-full grid-cols-3">
-                            <TabsTrigger value="app">App.tsx</TabsTrigger>
-                            <TabsTrigger value="css">index.css</TabsTrigger>
-                            <TabsTrigger value="config">Config</TabsTrigger>
+                            {fileTabs.map(tab => (
+                              <TabsTrigger key={tab.value} value={tab.value}>
+                                {tab.label}
+                              </TabsTrigger>
+                            ))}
                           </TabsList>
-                          <TabsContent value="app">
-                            <Textarea
-                              value={generatedCode['src/App.tsx']}
-                              onChange={(e) => setGeneratedCode({ ...generatedCode, 'src/App.tsx': e.target.value })}
-                              className="font-mono text-sm resize-none h-[500px]"
-                            />
-                          </TabsContent>
-                          <TabsContent value="css">
-                            <Textarea
-                              value={generatedCode['src/index.css']}
-                              onChange={(e) => setGeneratedCode({ ...generatedCode, 'src/index.css': e.target.value })}
-                              className="font-mono text-sm resize-none h-[500px]"
-                            />
-                          </TabsContent>
-                          <TabsContent value="config">
-                            <Textarea
-                              value={generatedCode['package.json']}
-                              readOnly
-                              className="font-mono text-sm resize-none h-[500px] opacity-75"
-                            />
-                          </TabsContent>
+                          {fileTabs.map(tab => (
+                            <TabsContent key={tab.value} value={tab.value}>
+                              <Textarea
+                                value={tab.content}
+                                onChange={(e) => setProjectState(prev => ({
+                                  ...prev,
+                                  generatedCode: {
+                                    ...prev.generatedCode,
+                                    [tab.value === 'app' ? 'src/App.tsx' : 
+                                     tab.value === 'css' ? 'src/index.css' : 'package.json']: e.target.value
+                                  }
+                                }))}
+                                className="font-mono text-sm resize-none h-[500px]"
+                                readOnly={tab.value === 'config'}
+                              />
+                            </TabsContent>
+                          ))}
                         </Tabs>
                       </CardContent>
                     </TabsContent>
@@ -596,7 +617,7 @@ Return ONLY the JSON, no other text.`;
                       <CardContent>
                         <div className="border-2 rounded-lg overflow-hidden bg-white">
                           <iframe
-                            srcDoc={getPreviewHTML()}
+                            srcDoc={previewHTML}
                             className="w-full h-[500px]"
                             title="App Preview"
                             sandbox="allow-scripts"
@@ -613,45 +634,14 @@ Return ONLY the JSON, no other text.`;
                   <Button
                     variant="outline"
                     className="flex-1 h-12"
-                    onClick={() => {
-                      setPhase('planning');
-                      setShowPlans(true);
-                      setGeneratedCode(initialFiles);
-                      setGeneratedPlan(null);
-                      setEditableInstructions('');
-                      setNewAppName('');
-                      setPrompt('');
-                    }}
+                    onClick={resetProjectState}
                   >
                     <Sparkles className="mr-2" />
                     New Project
                   </Button>
                   <Button
                     className="flex-1 h-12"
-                    onClick={async () => {
-                      if (!user) {
-                        toast.error('You must be logged in to save a project');
-                        return;
-                      }
-                      if (!newAppName || !prompt) {
-                        toast.error('Missing project data');
-                        return;
-                      }
-                      const { error } = await supabase.from('projects').insert([{
-                        user_id: user.id,
-                        name: newAppName,
-                        description: prompt,
-                        code: generatedCode
-                      }]);
-                      if (error) {
-                        console.error('Error saving project:', error);
-                        toast.error('Error saving project');
-                      } else {
-                        toast.success('Project saved successfully!');
-                        await fetchProjects();
-                        setMagicSheet(false);
-                      }
-                    }}
+                    onClick={handleSaveProject}
                   >
                     <Save className="mr-2" />
                     Save Project
@@ -700,23 +690,24 @@ Return ONLY the JSON, no other text.`;
                   </label>
                   <Textarea
                     value={editableInstructions}
-                    onChange={(e) => setEditableInstructions(e.target.value)}
+                    onChange={(e) => setProjectState(prev => ({
+                      ...prev,
+                      editableInstructions: e.target.value
+                    }))}
                     className="min-h-[500px] font-mono text-sm leading-relaxed border-2"
                     placeholder="Implementation instructions will appear here..."
                   />
                 </div>
 
-                {generatedPlan.files_to_modify.length > 0 && (
-                  <div className="border-2 rounded-lg p-4 bg-muted/50">
-                    <h4 className="font-semibold mb-3 flex items-center gap-2">
-                      <FileText className="w-4 h-4" />
-                      Note: The AI will decide which files to modify based on these instructions
-                    </h4>
-                    <p className="text-sm text-muted-foreground">
-                      You've provided precise specifications. The executor will determine the best files to modify to implement these changes.
-                    </p>
-                  </div>
-                )}
+                <div className="border-2 rounded-lg p-4 bg-muted/50">
+                  <h4 className="font-semibold mb-3 flex items-center gap-2">
+                    <FileText className="w-4 h-4" />
+                    Note: The AI will decide which files to modify based on these instructions
+                  </h4>
+                  <p className="text-sm text-muted-foreground">
+                    You've provided precise specifications. The executor will determine the best files to modify to implement these changes.
+                  </p>
+                </div>
               </div>
             </div>
 
