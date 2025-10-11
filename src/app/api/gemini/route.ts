@@ -3,62 +3,57 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function POST(request: NextRequest) {
   try {
-    const { prompt, model = 'gemini-2.0-flash' } = await request.json();
+    const { prompt, model = 'deepseek-reasoner' } = await request.json();
 
-    if (!process.env.GEMINI_API_KEY) {
+    if (!process.env.AIML_API_KEY) {
       return NextResponse.json(
-        { error: 'Gemini API key not configured' },
+        { error: 'AIMLAPI key not configured' },
         { status: 500 }
       );
     }
 
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      'https://api.aimlapi.com/chat/completions',
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.AIML_API_KEY}`,
         },
         body: JSON.stringify({
-          contents: [
+          model: model,
+          messages: [
             {
-              parts: [
-                {
-                  text: prompt
-                }
-              ]
+              role: 'user',
+              content: prompt
             }
           ],
-          generationConfig: {
-            temperature: 0.1,
-            topK: 40,
-            topP: 0.95,
-            maxOutputTokens: 8192,
-          }
+          temperature: 0.7,
+          top_p: 0.95,
         }),
       }
     );
 
     if (!response.ok) {
       const errorData = await response.json();
-      console.error('Gemini API error:', errorData);
+      console.error('AIMLAPI error:', errorData);
       return NextResponse.json(
-        { error: `Gemini API error: ${response.status} ${response.statusText}` },
+        { error: `AIMLAPI error: ${response.status} ${response.statusText}` },
         { status: response.status }
       );
     }
 
     const data = await response.json();
     
-    if (!data.candidates?.[0]?.content?.parts?.[0]?.text) {
-      throw new Error('Invalid response format from Gemini API');
+    if (!data.choices?.[0]?.message?.content) {
+      throw new Error('Invalid response format from AIMLAPI');
     }
 
-    const responseText = data.candidates[0].content.parts[0].text;
+    const responseText = data.choices[0].message.content;
     return NextResponse.json({ response: responseText });
 
   } catch (error) {
-    console.error('Gemini API error:', error);
+    console.error('AIMLAPI error:', error);
     return NextResponse.json(
       { error: 'Failed to process request' },
       { status: 500 }
